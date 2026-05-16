@@ -25,7 +25,7 @@ import {
   formatShowDateFull,
   relativeShowDate,
 } from "@/lib/format";
-import type { Bonus } from "@/db/schema";
+import type { Bonus, Recoup } from "@/db/schema";
 
 const COMP_LABELS: Record<string, string> = {
   artist_gl: "Artist guest list",
@@ -56,6 +56,7 @@ export default async function ShowDetailPage({
     ticketSales,
     expenses,
     comps,
+    recoups,
   } = data;
 
   const grossSoFar = ticketSales.reduce((sum, t) => sum + t.gross, 0);
@@ -74,8 +75,21 @@ export default async function ShowDetailPage({
     .reduce((s, c) => s + c.count, 0);
 
   const bonuses = deal ? parseBonuses(deal) : [];
-
   const isDisputed = settlement?.status === "disputed";
+
+  // Proactive recoup ambiguity detection (Feature 1.2).
+  // Fires when the deal notes mention a recoup but structured application
+  // type hasn't been confirmed — the exact scenario that caused Coastal Spell.
+  const freetextMentionsRecoup =
+    deal?.dealNotesFreetext != null &&
+    /recoup|mktg\s+fee|marketing\s+(cost|fee)|hospitality\s+overage/i.test(
+      deal.dealNotesFreetext,
+    );
+  const hasUnconfirmedRecoups = recoups.some(
+    (r: Recoup) => r.status !== "withdrawn" && !r.application,
+  );
+  const showRecoupBanner =
+    freetextMentionsRecoup || hasUnconfirmedRecoups;
 
   return (
     <div className="max-w-7xl">
@@ -234,6 +248,37 @@ export default async function ShowDetailPage({
                         </code>
                         . The in-app tool only reads structured bonuses — anything
                         in the prose below is invisible to it.
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Feature 1.2: proactive recoup ambiguity banner */}
+                  {showRecoupBanner && (
+                    <div className="rounded-lg bg-amber-50/70 ring-1 ring-amber-200/70 p-4 flex gap-3">
+                      <AlertCircle className="h-4 w-4 text-amber-700 shrink-0 mt-0.5" />
+                      <div>
+                        <div className="text-[13px] font-semibold text-amber-900">
+                          {freetextMentionsRecoup && hasUnconfirmedRecoups
+                            ? "Recoup in deal notes — placement not confirmed"
+                            : freetextMentionsRecoup
+                              ? "We noticed a recoup in your deal notes"
+                              : "Recoup placement not confirmed"}
+                        </div>
+                        <p className="text-[12.5px] text-ink-700 mt-1 leading-relaxed">
+                          {freetextMentionsRecoup && !hasUnconfirmedRecoups
+                            ? "The deal notes mention a recoup. Make sure it's been added to the settlement with a confirmed placement — inside the expense cap, or in addition to it?"
+                            : "Can you confirm how this recoup applies? Is it counted inside the expense cap, or in addition to it? Confirming this now prevents a dispute at settlement."}
+                        </p>
+                        <div className="mt-2 text-[12px] text-amber-800 font-medium">
+                          Confirm on the{" "}
+                          <a
+                            href={`/shows/${show.id}/settle`}
+                            className="underline underline-offset-2"
+                          >
+                            settlement screen
+                          </a>{" "}
+                          before settlement night.
+                        </div>
                       </div>
                     </div>
                   )}

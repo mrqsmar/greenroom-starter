@@ -159,7 +159,9 @@ export default async function SettlePage({
           <SupportedSettlement calc={calc} existingSettlement={settlement} />
         )}
 
-        {recoups.length > 0 && <RecoupsSection recoups={recoups} />}
+        {recoups.length > 0 && (
+          <RecoupsSection recoups={recoups} deal={deal} settlement={settlement} />
+        )}
 
         {settlement && (settlement.signoffText || settlement.notes) && (
           <SignoffSection settlement={settlement} />
@@ -789,21 +791,32 @@ function DealCompletenessIndicator({
   );
 }
 
-function RecoupsSection({ recoups }: { recoups: Recoup[] }) {
+function RecoupsSection({
+  recoups,
+  deal,
+  settlement,
+}: {
+  recoups: Recoup[];
+  deal: NonNullable<Awaited<ReturnType<typeof getShowById>>>["deal"];
+  settlement: NonNullable<Awaited<ReturnType<typeof getShowById>>>["settlement"];
+}) {
   const total = recoups.reduce((s, r) => s + r.amount, 0);
   const disputedTotal = recoups
     .filter((r) => r.status === "disputed")
     .reduce((s, r) => s + r.amount, 0);
   const hasDisputed = disputedTotal > 0;
+  const hasUnconfirmed = recoups.some(
+    (r) => r.status !== "withdrawn" && !r.application,
+  );
 
   return (
-    <Card accent={hasDisputed ? "rose" : undefined}>
+    <Card accent={hasDisputed ? "rose" : hasUnconfirmed ? "amber" : undefined}>
       <CardHeader>
         <div>
           <CardTitle>Recoups</CardTitle>
           <CardDescription>
-            Venue costs taken off the top before artist payment. Often the
-            disputed line items in a settlement.
+            Venue costs taken off the top before artist payment. Placement
+            ambiguity here is the most common source of disputes.
           </CardDescription>
         </div>
         <PlainBadge variant={hasDisputed ? "rose" : "default"}>
@@ -812,41 +825,170 @@ function RecoupsSection({ recoups }: { recoups: Recoup[] }) {
       </CardHeader>
       <CardContent className="divide-y divide-ink-100/80">
         {recoups.map((r) => (
-          <div
+          <RecoupRow
             key={r.id}
-            className="py-3.5 grid grid-cols-[1fr_auto_auto] items-center gap-3"
-          >
-            <div className="min-w-0">
-              <div className="text-[13px] text-ink-900 leading-tight">
-                {r.label}
-              </div>
-              <div className="text-[11.5px] text-ink-400 mt-0.5">
-                {RECOUP_LABELS[r.category]}
-                {r.application ? (
-                  <span className="ml-2 text-ink-300">
-                    · {RECOUP_APPLICATION_LABELS[r.application]}
-                  </span>
-                ) : (
-                  <span className="ml-2 text-amber-600/80">· Placement unconfirmed</span>
-                )}
-              </div>
+            recoup={r}
+            expenseCap={deal?.expenseCap ?? null}
+            disputedAt={settlement?.disputedAt ?? null}
+          />
+        ))}
+
+        {/* Original deal language — the paper trail Coastal Spell lacked */}
+        {deal?.dealNotesFreetext && (
+          <div className="pt-5 pb-1">
+            <div className="eyebrow text-[10px] text-ink-400 mb-2">
+              Original deal language
             </div>
-            <div>
-              {r.status === "disputed" ? (
-                <PlainBadge variant="rose">Disputed</PlainBadge>
-              ) : r.status === "withdrawn" ? (
-                <PlainBadge variant="default">Withdrawn</PlainBadge>
-              ) : (
-                <PlainBadge variant="brand">Agreed</PlainBadge>
-              )}
+            <div
+              className="text-[12.5px] text-ink-700 bg-canvas-soft rounded-lg p-4 ring-1 ring-ink-200/60 leading-relaxed"
+              style={{ fontStyle: "italic" }}
+            >
+              {deal.dealNotesFreetext}
             </div>
-            <div className="text-[13.5px] font-mono tabular text-ink-900 text-right min-w-[80px]">
-              {formatMoney(r.amount)}
+            <div className="text-[11px] text-ink-400 mt-2 leading-snug">
+              Verbatim from Mariana&apos;s deal notes. Surfaced here so both
+              parties are reading the same source — not their respective emails.
             </div>
           </div>
-        ))}
+        )}
       </CardContent>
     </Card>
+  );
+}
+
+function RecoupRow({
+  recoup: r,
+  expenseCap,
+  disputedAt,
+}: {
+  recoup: Recoup;
+  expenseCap: number | null;
+  disputedAt: Date | null;
+}) {
+  const isUnconfirmed = r.status !== "withdrawn" && !r.application;
+
+  return (
+    <div className="py-3.5">
+      <div className="grid grid-cols-[1fr_auto_auto] items-start gap-3">
+        <div className="min-w-0">
+          <div className="text-[13px] text-ink-900 leading-tight">{r.label}</div>
+          <div className="text-[11.5px] text-ink-400 mt-0.5">
+            {RECOUP_LABELS[r.category]}
+            {r.application ? (
+              <span className="ml-2 text-ink-300">
+                · {RECOUP_APPLICATION_LABELS[r.application]}
+              </span>
+            ) : (
+              <span className="ml-2 text-amber-600/80">
+                · Placement unconfirmed
+              </span>
+            )}
+          </div>
+
+          {/* Confirmed timestamp */}
+          {r.confirmedAt && (
+            <div className="text-[11px] text-ink-400 mt-1">
+              Placement confirmed{" "}
+              {new Date(r.confirmedAt).toLocaleDateString("en-US", {
+                month: "short",
+                day: "numeric",
+                year: "numeric",
+              })}
+              {r.confirmedBy && ` · by ${r.confirmedBy}`}
+            </div>
+          )}
+
+          {/* Dispute timestamp */}
+          {r.status === "disputed" && disputedAt && (
+            <div className="flex items-center gap-1 text-[11px] text-rose-600 mt-1">
+              <AlertTriangle className="h-3 w-3" />
+              Dispute filed{" "}
+              {new Date(disputedAt).toLocaleDateString("en-US", {
+                month: "short",
+                day: "numeric",
+                year: "numeric",
+              })}
+            </div>
+          )}
+
+          {/* Feature 1.2: "How does this recoup apply?" prompt for unconfirmed placement */}
+          {isUnconfirmed && (
+            <div className="mt-3 rounded-md bg-amber-50/70 ring-1 ring-amber-200/70 p-3">
+              <div className="text-[11.5px] font-semibold text-amber-900 mb-2.5">
+                How does this recoup apply?
+              </div>
+              <div className="space-y-2">
+                <RecoupPlacementOption
+                  label={
+                    expenseCap != null
+                      ? `Inside the ${formatMoney(expenseCap)} expense cap`
+                      : "Inside the expense cap"
+                  }
+                  description="Counts toward the cap ceiling — reduces how much of the cap is left for regular expenses."
+                  value="inside_cap"
+                />
+                <RecoupPlacementOption
+                  label={
+                    expenseCap != null
+                      ? `Additional to the ${formatMoney(expenseCap)} expense cap`
+                      : "Additional to the expense cap"
+                  }
+                  description="Deducted on top of capped expenses — does not eat into the expense cap."
+                  value="additional_to_cap"
+                />
+                <RecoupPlacementOption
+                  label="Deducted from gross before net"
+                  description="Comes off the top, before the expense cap calculation runs."
+                  value="pre_net"
+                />
+                <RecoupPlacementOption
+                  label="Deducted from net after expenses"
+                  description="Applied after expenses are deducted from gross."
+                  value="post_net"
+                />
+              </div>
+              <div className="text-[11px] text-amber-700 mt-3 leading-snug">
+                This ambiguity is how the Coastal Spell dispute started. Confirm
+                the placement with the agent before settlement night — a five-minute
+                email now prevents a three-day dispute later.
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="mt-0.5">
+          {r.status === "disputed" ? (
+            <PlainBadge variant="rose">Disputed</PlainBadge>
+          ) : r.status === "withdrawn" ? (
+            <PlainBadge variant="default">Withdrawn</PlainBadge>
+          ) : (
+            <PlainBadge variant="brand">Agreed</PlainBadge>
+          )}
+        </div>
+        <div className="text-[13.5px] font-mono tabular text-ink-900 text-right min-w-[80px] mt-0.5">
+          {formatMoney(r.amount)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RecoupPlacementOption({
+  label,
+  description,
+}: {
+  label: string;
+  description: string;
+  value: string;
+}) {
+  return (
+    <div className="flex items-start gap-2.5">
+      <div className="mt-0.5 h-3.5 w-3.5 shrink-0 rounded-full ring-1 ring-amber-400/60 bg-white" />
+      <div className="leading-tight">
+        <span className="text-[12px] text-ink-800 font-medium">{label}</span>
+        <span className="text-[11.5px] text-ink-500"> — {description}</span>
+      </div>
+    </div>
   );
 }
 
