@@ -6,11 +6,13 @@ import {
   ArrowRight,
   Check,
   AlertTriangle,
+  Info,
   Mail,
   Pencil,
   XCircle,
   Wallet,
   TrendingUp,
+  Trophy,
 } from "lucide-react";
 import { getShowById } from "@/lib/queries";
 import {
@@ -23,6 +25,7 @@ import {
 } from "@/components/ui/card";
 import { StatusBadge, DealTypeBadge, PlainBadge } from "@/components/ui/badge";
 import { calculateSettlement } from "@/lib/dealMath";
+import { checkDealCompleteness } from "@/lib/dealCompleteness";
 import {
   formatMoney,
   formatShowDateFull,
@@ -37,6 +40,13 @@ const RECOUP_LABELS: Record<Recoup["category"], string> = {
   prior_advance: "Prior advance",
   damages: "Damages",
   other: "Other",
+};
+
+const RECOUP_APPLICATION_LABELS: Record<string, string> = {
+  inside_cap: "Inside expense cap",
+  additional_to_cap: "Additional to cap",
+  pre_net: "Deducted before net",
+  post_net: "Deducted after net",
 };
 
 export default async function SettlePage({
@@ -67,7 +77,10 @@ export default async function SettlePage({
     ticketSales,
     expenses,
     venueCapacity: data.venue?.capacity ?? undefined,
+    recoups,
   });
+
+  const completenessWarnings = checkDealCompleteness(deal, recoups, expenses);
   const grossSoFar = ticketSales.reduce((sum, t) => sum + t.gross, 0);
   const totalFees = ticketSales.reduce((sum, t) => sum + t.fees, 0);
   const totalExpenses = expenses
@@ -127,6 +140,10 @@ export default async function SettlePage({
       )}
 
       <div className="space-y-6 mt-6">
+        {completenessWarnings.length > 0 && (
+          <DealCompletenessIndicator warnings={completenessWarnings} />
+        )}
+
         {!calc.supported ? (
           <UnsupportedDeal
             dealType={calc.dealType}
@@ -497,6 +514,8 @@ function SupportedSettlement({
     Awaited<ReturnType<typeof getShowById>>
   >["settlement"];
 }) {
+  const isVs = !!calc.vsDetails;
+
   return (
     <>
       {/* Hero number */}
@@ -542,24 +561,51 @@ function SupportedSettlement({
           </div>
         </CardHeader>
         <CardContent className="divide-y divide-ink-100/80">
-          <Row
-            label="Gross box office"
-            value={formatMoney(calc.grossBoxOffice)}
-          />
-          <Row label="Net box office" value={formatMoney(calc.netBoxOffice)} />
-          <Row
-            label="Total expenses (passed through)"
-            value={formatMoney(calc.totalExpenses)}
-          />
-          <div className="pt-3" />
-          {calc.steps.map((step, i) => (
-            <Row
-              key={i}
-              label={step.label}
-              value={formatMoney(step.value)}
-              note={step.note}
+          {isVs ? (
+            // Vs deals: steps ARE the full calculation — gross through net through %
+            <>
+              {calc.steps.map((step, i) => (
+                <Row
+                  key={i}
+                  label={step.label}
+                  value={formatMoney(step.value)}
+                  note={step.note}
+                  isDeduction={step.isDeduction}
+                />
+              ))}
+            </>
+          ) : (
+            // Flat / % of gross: header rows + steps
+            <>
+              <Row
+                label="Gross box office"
+                value={formatMoney(calc.grossBoxOffice)}
+              />
+              <Row label="Net box office" value={formatMoney(calc.netBoxOffice)} />
+              <Row
+                label="Total expenses (passed through)"
+                value={formatMoney(calc.totalExpenses)}
+              />
+              <div className="pt-3" />
+              {calc.steps.map((step, i) => (
+                <Row
+                  key={i}
+                  label={step.label}
+                  value={formatMoney(step.value)}
+                  note={step.note}
+                />
+              ))}
+            </>
+          )}
+
+          {/* Vs deal: guarantee vs. percentage comparison */}
+          {calc.vsDetails && (
+            <VsComparison
+              vsDetails={calc.vsDetails}
+              bonusThresholdProgress={calc.bonusThresholdProgress}
             />
-          ))}
+          )}
+
           <div className="pt-3" />
           <div className="flex items-baseline justify-between py-3 font-semibold">
             <span className="text-[13px] text-ink-900">Total to artist</span>
@@ -604,6 +650,145 @@ function SupportedSettlement({
   );
 }
 
+// --- Vs deal: guarantee vs. percentage comparison box ---
+
+function VsComparison({
+  vsDetails,
+  bonusThresholdProgress,
+}: {
+  vsDetails: NonNullable<
+    Extract<ReturnType<typeof calculateSettlement>, { supported: true }>["vsDetails"]
+  >;
+  bonusThresholdProgress?: Extract<
+    ReturnType<typeof calculateSettlement>,
+    { supported: true }
+  >["bonusThresholdProgress"];
+}) {
+  const { guarantee, percentagePayout, winner } = vsDetails;
+
+  return (
+    <div className="my-4 rounded-lg ring-1 ring-ink-200/60 bg-canvas-soft overflow-hidden">
+      <div className="px-4 pt-4 pb-3">
+        <div className="eyebrow text-[10px] text-ink-400 mb-3">
+          Guarantee vs. percentage — which wins
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div
+            className={`rounded-md p-3 ring-1 transition-colors ${
+              winner === "guarantee"
+                ? "bg-brand-50 ring-brand-200"
+                : "bg-white ring-ink-200/60"
+            }`}
+          >
+            <div className="text-[11px] text-ink-500 mb-1">Guarantee (floor)</div>
+            <div
+              className={`text-[22px] font-mono tabular font-semibold leading-none ${
+                winner === "guarantee" ? "text-brand-800" : "text-ink-400"
+              }`}
+            >
+              {formatMoney(guarantee)}
+            </div>
+            {winner === "guarantee" && (
+              <div className="flex items-center gap-1 text-[11px] text-brand-700 mt-1.5 font-medium">
+                <Trophy className="h-3 w-3" /> Wins
+              </div>
+            )}
+          </div>
+          <div
+            className={`rounded-md p-3 ring-1 transition-colors ${
+              winner === "percentage"
+                ? "bg-brand-50 ring-brand-200"
+                : "bg-white ring-ink-200/60"
+            }`}
+          >
+            <div className="text-[11px] text-ink-500 mb-1">Percentage track</div>
+            <div
+              className={`text-[22px] font-mono tabular font-semibold leading-none ${
+                winner === "percentage" ? "text-brand-800" : "text-ink-400"
+              }`}
+            >
+              {formatMoney(percentagePayout)}
+            </div>
+            {winner === "percentage" && (
+              <div className="flex items-center gap-1 text-[11px] text-brand-700 mt-1.5 font-medium">
+                <Trophy className="h-3 w-3" /> Wins
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {bonusThresholdProgress && bonusThresholdProgress.length > 0 && (
+        <div className="border-t border-ink-100/80 px-4 py-3 space-y-2">
+          <div className="eyebrow text-[10px] text-ink-400 mb-2">Bonus threshold progress</div>
+          {bonusThresholdProgress.map((b, i) => (
+            <div key={i} className="flex items-center justify-between gap-4">
+              <div className="min-w-0">
+                {b.triggered ? (
+                  <div className="flex items-center gap-1.5 text-[12px] text-brand-700 font-medium">
+                    <Check className="h-3 w-3" />
+                    {b.label} triggered
+                  </div>
+                ) : (
+                  <div className="text-[12px] text-ink-600">
+                    {b.label} —{" "}
+                    <span className="font-mono tabular">{formatMoney(b.away)}</span>{" "}
+                    away from{" "}
+                    <span className="text-brand-700 font-medium">+{formatMoney(b.amount)}</span>
+                  </div>
+                )}
+              </div>
+              <div className="text-[11px] text-ink-400 font-mono tabular shrink-0">
+                {formatMoney(b.currentGross)} / {formatMoney(b.threshold)}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// --- Feature 1.3: Deal Completeness Indicator ---
+
+function DealCompletenessIndicator({
+  warnings,
+}: {
+  warnings: ReturnType<typeof checkDealCompleteness>;
+}) {
+  const highCount = warnings.filter((w) => w.severity === "high").length;
+
+  return (
+    <Card accent="amber">
+      <CardHeader>
+        <div>
+          <CardTitle>Before settlement night</CardTitle>
+          <CardDescription>
+            {highCount > 0
+              ? `${highCount} item${highCount === 1 ? "" : "s"} that could cause a dispute at settlement — resolve ${highCount === 1 ? "it" : "them"} with the agent now.`
+              : "A few things worth reviewing before the show."}
+          </CardDescription>
+        </div>
+        <PlainBadge variant="amber">
+          {warnings.length} flag{warnings.length === 1 ? "" : "s"}
+        </PlainBadge>
+      </CardHeader>
+      <CardContent className="divide-y divide-ink-100/80">
+        {warnings.map((w, i) => (
+          <div key={i} className="py-3 flex gap-3">
+            {w.severity === "high" ? (
+              <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+            ) : (
+              <Info className="h-4 w-4 text-ink-400 shrink-0 mt-0.5" />
+            )}
+            <p className="text-[13px] text-ink-700 leading-relaxed">{w.message}</p>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
 function RecoupsSection({ recoups }: { recoups: Recoup[] }) {
   const total = recoups.reduce((s, r) => s + r.amount, 0);
   const disputedTotal = recoups
@@ -637,6 +822,13 @@ function RecoupsSection({ recoups }: { recoups: Recoup[] }) {
               </div>
               <div className="text-[11.5px] text-ink-400 mt-0.5">
                 {RECOUP_LABELS[r.category]}
+                {r.application ? (
+                  <span className="ml-2 text-ink-300">
+                    · {RECOUP_APPLICATION_LABELS[r.application]}
+                  </span>
+                ) : (
+                  <span className="ml-2 text-amber-600/80">· Placement unconfirmed</span>
+                )}
               </div>
             </div>
             <div>
@@ -694,22 +886,30 @@ function Row({
   label,
   value,
   note,
+  isDeduction,
 }: {
   label: string;
   value: string;
   note?: string;
+  isDeduction?: boolean;
 }) {
   return (
     <div className="flex items-baseline justify-between py-2.5">
       <div>
-        <div className="text-[13px] text-ink-600">{label}</div>
+        <div className={`text-[13px] ${isDeduction ? "text-ink-500" : "text-ink-600"}`}>
+          {label}
+        </div>
         {note && (
           <div className="text-[11.5px] text-ink-400 mt-0.5 max-w-md leading-snug">
             {note}
           </div>
         )}
       </div>
-      <div className="text-[13.5px] text-ink-900 font-mono tabular">
+      <div
+        className={`text-[13.5px] font-mono tabular ${
+          isDeduction ? "text-ink-500" : "text-ink-900"
+        }`}
+      >
         {value}
       </div>
     </div>

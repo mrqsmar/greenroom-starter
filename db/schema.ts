@@ -330,6 +330,12 @@ export type Recoup = {
   label: string;
   amount: number;
   status: "agreed" | "disputed" | "withdrawn";
+  // Feature 1.2: Structured recoup capture — eliminates Coastal Spell-style ambiguity.
+  // When absent, the vs deal calculator defaults to 'pre_net' placement.
+  application?: "inside_cap" | "additional_to_cap" | "pre_net" | "post_net";
+  deductionBasis?: "gross" | "net";
+  confirmedAt?: string;
+  confirmedBy?: string;
 };
 
 export type SettlementStage = Settlement["status"];
