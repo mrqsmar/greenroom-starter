@@ -21,6 +21,8 @@ import { Button } from "@/components/ui/button";
 import { parseBonuses } from "@/lib/dealMath";
 import { checkDealCompleteness } from "@/lib/dealCompleteness";
 import { DealCompletenessIndicator } from "@/components/ui/deal-completeness";
+import { computePayoutEstimate } from "@/lib/payoutEstimate";
+import { LivePayoutWidget } from "@/components/ui/live-payout";
 import {
   formatMoney,
   formatMoneyCompact,
@@ -97,6 +99,14 @@ export default async function ShowDetailPage({
     ? checkDealCompleteness(deal, recoups, expenses)
     : [];
 
+  const payoutEstimate = computePayoutEstimate({
+    deal,
+    ticketSales,
+    expenses,
+    recoups,
+    venueCapacity: data.venue?.capacity ?? undefined,
+  });
+
   return (
     <div className="max-w-7xl">
       {/* Poster header */}
@@ -170,6 +180,12 @@ export default async function ShowDetailPage({
                 {show.internalNotes}
               </div>
             </div>
+          </div>
+        )}
+
+        {payoutEstimate.estimable && (
+          <div className="mb-5">
+            <LivePayoutWidget estimate={payoutEstimate} />
           </div>
         )}
 
