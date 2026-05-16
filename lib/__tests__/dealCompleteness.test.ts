@@ -382,6 +382,230 @@ describe("Feature 1.3 — Deal Completeness Indicator", () => {
     });
   });
 
+  // ---- recoup_in_notes_not_structured ----
+
+  describe("recoup_in_notes_not_structured warning", () => {
+    it("fires when freetext mentions 'recoup' and no structured recoups exist", () => {
+      const warnings = checkDealCompleteness(
+        makeDeal({ dealNotesFreetext: "Marketing recoup of $500 applies." }),
+        [],
+        [],
+      );
+      const w = warnings.find(w => w.type === "recoup_in_notes_not_structured");
+      expect(w).toBeDefined();
+      expect(w!.severity).toBe("high");
+    });
+
+    it("fires for 'mktg fee' keyword in notes with no structured recoups", () => {
+      const warnings = checkDealCompleteness(
+        makeDeal({ dealNotesFreetext: "Mktg fee of $300 to be recouped." }),
+        [],
+        [],
+      );
+      expect(warnings.some(w => w.type === "recoup_in_notes_not_structured")).toBe(true);
+    });
+
+    it("fires for 'marketing cost' keyword in notes with no structured recoups", () => {
+      const warnings = checkDealCompleteness(
+        makeDeal({ dealNotesFreetext: "marketing cost will be deducted." }),
+        [],
+        [],
+      );
+      expect(warnings.some(w => w.type === "recoup_in_notes_not_structured")).toBe(true);
+    });
+
+    it("does NOT fire when structured recoups exist (even without application)", () => {
+      const warnings = checkDealCompleteness(
+        makeDeal({ dealNotesFreetext: "Recoup applies." }),
+        [makeRecoup(500)], // active recoup exists
+        [],
+      );
+      expect(warnings.some(w => w.type === "recoup_in_notes_not_structured")).toBe(false);
+    });
+
+    it("does NOT fire when there are no deal notes", () => {
+      const warnings = checkDealCompleteness(
+        makeDeal({ dealNotesFreetext: null }),
+        [],
+        [],
+      );
+      expect(warnings.some(w => w.type === "recoup_in_notes_not_structured")).toBe(false);
+    });
+
+    it("does NOT fire when notes mention recoup but only withdrawn recoups exist (withdrawn = resolved)", () => {
+      const warnings = checkDealCompleteness(
+        makeDeal({ dealNotesFreetext: "Recoup agreed." }),
+        [makeRecoup(500, undefined, "withdrawn")],
+        [],
+      );
+      // withdrawn recoups don't count as active — so this DOES fire
+      expect(warnings.some(w => w.type === "recoup_in_notes_not_structured")).toBe(true);
+    });
+
+    it("does NOT fire when notes don't mention any recoup-related keywords", () => {
+      const warnings = checkDealCompleteness(
+        makeDeal({ dealNotesFreetext: "Standard deal, no special terms." }),
+        [],
+        [],
+      );
+      expect(warnings.some(w => w.type === "recoup_in_notes_not_structured")).toBe(false);
+    });
+  });
+
+  // ---- bonus_in_notes_not_structured ----
+
+  describe("bonus_in_notes_not_structured warning", () => {
+    it("fires when freetext mentions 'bonus' and no bonuses are structured", () => {
+      const warnings = checkDealCompleteness(
+        makeDeal({ dealNotesFreetext: "Artist gets a bonus if gross exceeds $40k.", bonusesJson: null }),
+        [],
+        [],
+      );
+      const w = warnings.find(w => w.type === "bonus_in_notes_not_structured");
+      expect(w).toBeDefined();
+      expect(w!.severity).toBe("medium");
+    });
+
+    it("fires for 'escalat' keyword in notes with no structured bonuses", () => {
+      const warnings = checkDealCompleteness(
+        makeDeal({ dealNotesFreetext: "Deal escalates at $50k gross.", bonusesJson: null }),
+        [],
+        [],
+      );
+      expect(warnings.some(w => w.type === "bonus_in_notes_not_structured")).toBe(true);
+    });
+
+    it("fires for 'incentive' keyword in notes with no structured bonuses", () => {
+      const warnings = checkDealCompleteness(
+        makeDeal({ dealNotesFreetext: "Incentive payment applies.", bonusesJson: null }),
+        [],
+        [],
+      );
+      expect(warnings.some(w => w.type === "bonus_in_notes_not_structured")).toBe(true);
+    });
+
+    it("fires for '$X if gross exceeds' pattern in notes", () => {
+      const warnings = checkDealCompleteness(
+        makeDeal({ dealNotesFreetext: "$5,000 if gross exceeds $60,000.", bonusesJson: null }),
+        [],
+        [],
+      );
+      expect(warnings.some(w => w.type === "bonus_in_notes_not_structured")).toBe(true);
+    });
+
+    it("does NOT fire when there are no deal notes", () => {
+      const warnings = checkDealCompleteness(
+        makeDeal({ dealNotesFreetext: null, bonusesJson: null }),
+        [],
+        [],
+      );
+      expect(warnings.some(w => w.type === "bonus_in_notes_not_structured")).toBe(false);
+    });
+
+    it("does NOT fire when notes mention bonus AND structured bonuses exist (different warning fires instead)", () => {
+      const warnings = checkDealCompleteness(
+        makeDeal({
+          dealNotesFreetext: "Bonus if gross exceeds $40k.",
+          bonusesJson: JSON.stringify([{ type: "gross_threshold", threshold: 40000, amount: 5000, label: "Gross bonus" }]),
+        }),
+        [],
+        [],
+      );
+      expect(warnings.some(w => w.type === "bonus_in_notes_not_structured")).toBe(false);
+    });
+
+    it("does NOT fire when notes have no bonus-related keywords", () => {
+      const warnings = checkDealCompleteness(
+        makeDeal({ dealNotesFreetext: "Standard deal, guarantee only.", bonusesJson: null }),
+        [],
+        [],
+      );
+      expect(warnings.some(w => w.type === "bonus_in_notes_not_structured")).toBe(false);
+    });
+  });
+
+  // ---- bonus_notes_may_have_extra_conditions ----
+
+  describe("bonus_notes_may_have_extra_conditions warning", () => {
+    it("fires when structured bonuses exist AND freetext also mentions bonuses", () => {
+      const warnings = checkDealCompleteness(
+        makeDeal({
+          dealNotesFreetext: "Bonus if gross exceeds $40k — also needs sellout.",
+          bonusesJson: JSON.stringify([{ type: "gross_threshold", threshold: 40000, amount: 5000, label: "Gross bonus" }]),
+        }),
+        [],
+        [],
+      );
+      const w = warnings.find(w => w.type === "bonus_notes_may_have_extra_conditions");
+      expect(w).toBeDefined();
+      expect(w!.severity).toBe("medium");
+    });
+
+    it("message references the number of structured bonuses", () => {
+      const warnings = checkDealCompleteness(
+        makeDeal({
+          dealNotesFreetext: "Two bonus tiers also mentioned in notes.",
+          bonusesJson: JSON.stringify([
+            { type: "gross_threshold", threshold: 40000, amount: 5000, label: "Tier 1" },
+            { type: "gross_threshold", threshold: 60000, amount: 8000, label: "Tier 2" },
+          ]),
+        }),
+        [],
+        [],
+      );
+      const w = warnings.find(w => w.type === "bonus_notes_may_have_extra_conditions");
+      expect(w).toBeDefined();
+      expect(w!.message).toContain("2 bonuses");
+    });
+
+    it("message uses singular form for a single structured bonus", () => {
+      const warnings = checkDealCompleteness(
+        makeDeal({
+          dealNotesFreetext: "Bonus also covered in notes.",
+          bonusesJson: JSON.stringify([{ type: "gross_threshold", threshold: 40000, amount: 5000, label: "Gross bonus" }]),
+        }),
+        [],
+        [],
+      );
+      const w = warnings.find(w => w.type === "bonus_notes_may_have_extra_conditions");
+      expect(w!.message).toContain("1 bonus is");
+    });
+
+    it("does NOT fire when notes mention bonus but bonusesJson is empty (bonus_in_notes_not_structured fires instead)", () => {
+      const warnings = checkDealCompleteness(
+        makeDeal({ dealNotesFreetext: "Bonus if gross exceeds $40k.", bonusesJson: null }),
+        [],
+        [],
+      );
+      expect(warnings.some(w => w.type === "bonus_notes_may_have_extra_conditions")).toBe(false);
+      expect(warnings.some(w => w.type === "bonus_in_notes_not_structured")).toBe(true);
+    });
+
+    it("does NOT fire when structured bonuses exist but notes have no bonus keywords", () => {
+      const warnings = checkDealCompleteness(
+        makeDeal({
+          dealNotesFreetext: "Standard deal.",
+          bonusesJson: JSON.stringify([{ type: "gross_threshold", threshold: 40000, amount: 5000, label: "Gross bonus" }]),
+        }),
+        [],
+        [],
+      );
+      expect(warnings.some(w => w.type === "bonus_notes_may_have_extra_conditions")).toBe(false);
+    });
+
+    it("does NOT fire when there are no deal notes at all", () => {
+      const warnings = checkDealCompleteness(
+        makeDeal({
+          dealNotesFreetext: null,
+          bonusesJson: JSON.stringify([{ type: "gross_threshold", threshold: 40000, amount: 5000, label: "Gross bonus" }]),
+        }),
+        [],
+        [],
+      );
+      expect(warnings.some(w => w.type === "bonus_notes_may_have_extra_conditions")).toBe(false);
+    });
+  });
+
   // ---- Multiple warnings ----
 
   describe("Multiple warnings can fire simultaneously", () => {

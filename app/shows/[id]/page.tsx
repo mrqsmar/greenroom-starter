@@ -19,6 +19,8 @@ import {
 import { StatusBadge, DealTypeBadge, PlainBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { parseBonuses } from "@/lib/dealMath";
+import { checkDealCompleteness } from "@/lib/dealCompleteness";
+import { DealCompletenessIndicator } from "@/components/ui/deal-completeness";
 import {
   formatMoney,
   formatMoneyCompact,
@@ -90,6 +92,10 @@ export default async function ShowDetailPage({
   );
   const showRecoupBanner =
     freetextMentionsRecoup || hasUnconfirmedRecoups;
+
+  const completenessWarnings = deal
+    ? checkDealCompleteness(deal, recoups, expenses)
+    : [];
 
   return (
     <div className="max-w-7xl">
@@ -164,6 +170,12 @@ export default async function ShowDetailPage({
                 {show.internalNotes}
               </div>
             </div>
+          </div>
+        )}
+
+        {completenessWarnings.length > 0 && (
+          <div className="mb-5">
+            <DealCompletenessIndicator warnings={completenessWarnings} />
           </div>
         )}
 
