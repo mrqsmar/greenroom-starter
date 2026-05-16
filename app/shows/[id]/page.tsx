@@ -6,6 +6,7 @@ import {
   AlertCircle,
   Clock,
   TrendingUp,
+  Share2,
 } from "lucide-react";
 import { getShowById } from "@/lib/queries";
 import {
@@ -149,12 +150,20 @@ export default async function ShowDetailPage({
               </span>
             </div>
           </div>
-          <Link href={`/shows/${show.id}/settle`} className="mt-6 shrink-0">
-            <Button variant="brand" size="lg">
-              <FileSpreadsheet className="h-4 w-4" />
-              {settlement ? "View settlement" : "Settle show"}
-            </Button>
-          </Link>
+          <div className="mt-6 shrink-0 flex items-center gap-2">
+            <Link href={`/shows/${show.id}/preview`} target="_blank">
+              <Button variant="secondary" size="lg">
+                <Share2 className="h-4 w-4" />
+                Share preview
+              </Button>
+            </Link>
+            <Link href={`/shows/${show.id}/settle`}>
+              <Button variant="brand" size="lg">
+                <FileSpreadsheet className="h-4 w-4" />
+                {settlement ? "View settlement" : "Settle show"}
+              </Button>
+            </Link>
+          </div>
         </div>
 
         {/* Key numbers strip */}
