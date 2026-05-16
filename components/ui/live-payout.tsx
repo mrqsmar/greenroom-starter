@@ -1,4 +1,4 @@
-import { Check, TrendingUp, Ticket, AlertCircle } from "lucide-react";
+import { Check, TrendingUp, Ticket, AlertCircle, Info } from "lucide-react";
 import {
   Card,
   CardContent,
@@ -8,14 +8,35 @@ import {
 } from "@/components/ui/card";
 import { PlainBadge } from "@/components/ui/badge";
 import { formatMoney } from "@/lib/format";
-import type { PayoutEstimate, BonusProgress } from "@/lib/payoutEstimate";
+import type { PayoutEstimate, BonusProgress, ExpenseCategoryState } from "@/lib/payoutEstimate";
+
+// When the estimate can't run — surfaces the specific missing field so
+// Mariana can confirm the value rather than wondering why the widget is gone.
+export function EstimateBlockedCard({ reason }: { reason: string }) {
+  return (
+    <Card>
+      <CardContent className="py-5 flex items-start gap-3">
+        <Info className="h-4 w-4 text-ink-400 shrink-0 mt-0.5" />
+        <div>
+          <div className="text-[13px] font-medium text-ink-700 mb-0.5">
+            Estimate unavailable
+          </div>
+          <p className="text-[12.5px] text-ink-500 leading-relaxed">{reason}</p>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
 
 export function LivePayoutWidget({ estimate }: { estimate: PayoutEstimate }) {
-  if (!estimate.estimable) return null;
+  if (!estimate.estimable) {
+    return <EstimateBlockedCard reason={estimate.reason} />;
+  }
 
   const {
     displayPayout,
     confidence,
+    expenseCategoryStates,
     pendingExpenseCategories,
     vsComparison,
     bonusThresholdProgress,
@@ -26,7 +47,7 @@ export function LivePayoutWidget({ estimate }: { estimate: PayoutEstimate }) {
   const confidenceLabel =
     confidence === "high"
       ? "High confidence"
-      : `Medium confidence — ${pendingExpenseCategories.length} expense categor${pendingExpenseCategories.length === 1 ? "y" : "ies"} pending`;
+      : `Medium confidence — ${pendingExpenseCategories.length} categor${pendingExpenseCategories.length === 1 ? "y" : "ies"} pending`;
 
   return (
     <Card accent="brand">
@@ -59,7 +80,6 @@ export function LivePayoutWidget({ estimate }: { estimate: PayoutEstimate }) {
             {formatMoney(displayPayout)}
           </div>
 
-          {/* vs deal: which track wins */}
           {vsComparison && (
             <div className="mt-3 text-[13px] text-ink-600">
               {vsComparison.winner === "percentage" ? (
@@ -72,9 +92,7 @@ export function LivePayoutWidget({ estimate }: { estimate: PayoutEstimate }) {
                 </>
               ) : (
                 <>
-                  <span className="text-ink-700 font-medium">
-                    Guarantee holds
-                  </span>{" "}
+                  <span className="text-ink-700 font-medium">Guarantee holds</span>{" "}
                   · percentage track{" "}
                   <span className="font-mono tabular">
                     {formatMoney(vsComparison.percentagePayout)}
@@ -86,7 +104,7 @@ export function LivePayoutWidget({ estimate }: { estimate: PayoutEstimate }) {
           )}
         </div>
 
-        {/* vs comparison: guarantee | percentage side-by-side */}
+        {/* Vs comparison: guarantee | percentage side-by-side */}
         {vsComparison && (
           <div className="mb-5 grid grid-cols-2 gap-3">
             <div
@@ -101,9 +119,7 @@ export function LivePayoutWidget({ estimate }: { estimate: PayoutEstimate }) {
               </div>
               <div
                 className={`text-[20px] font-mono tabular font-semibold leading-none ${
-                  vsComparison.winner === "guarantee"
-                    ? "text-brand-800"
-                    : "text-ink-500"
+                  vsComparison.winner === "guarantee" ? "text-brand-800" : "text-ink-500"
                 }`}
               >
                 {formatMoney(vsComparison.guarantee)}
@@ -121,9 +137,7 @@ export function LivePayoutWidget({ estimate }: { estimate: PayoutEstimate }) {
               </div>
               <div
                 className={`text-[20px] font-mono tabular font-semibold leading-none ${
-                  vsComparison.winner === "percentage"
-                    ? "text-brand-800"
-                    : "text-ink-500"
+                  vsComparison.winner === "percentage" ? "text-brand-800" : "text-ink-500"
                 }`}
               >
                 {formatMoney(vsComparison.percentagePayout)}
@@ -174,28 +188,51 @@ export function LivePayoutWidget({ estimate }: { estimate: PayoutEstimate }) {
               </div>
               <div className="text-[11.5px] text-ink-400 mt-1">
                 {ticketProjection.sold} of {ticketProjection.capacity} sold ·
-                projected gross{" "}
-                {formatMoney(ticketProjection.projectedGross)}
+                projected gross {formatMoney(ticketProjection.projectedGross)}
               </div>
             </div>
           )}
 
-          {/* Confidence detail */}
-          {confidence === "medium" && pendingExpenseCategories.length > 0 && (
-            <div className="flex items-start gap-2.5 pt-1">
-              <AlertCircle className="h-3.5 w-3.5 text-amber-600 shrink-0 mt-0.5" />
-              <p className="text-[12.5px] text-ink-600 leading-relaxed">
-                <span className="font-medium text-amber-800">
-                  {pendingExpenseCategories.join(", ")}
-                </span>{" "}
-                not yet entered. The estimate uses $0 for these categories —
-                enter them to move confidence to High and see the exact number.
-              </p>
-            </div>
+          {/* Confidence detail — named per-category with specific state */}
+          {confidence === "medium" && expenseCategoryStates.length > 0 && (
+            <ConfidenceBreakdown states={expenseCategoryStates} />
           )}
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+function ConfidenceBreakdown({ states }: { states: ExpenseCategoryState[] }) {
+  const notEntered = states.filter((s) => s.state === "not_entered");
+  const pendingApproval = states.filter((s) => s.state === "pending_approval");
+
+  return (
+    <div className="flex items-start gap-2.5 pt-1">
+      <AlertCircle className="h-3.5 w-3.5 text-amber-600 shrink-0 mt-0.5" />
+      <div className="space-y-1">
+        {pendingApproval.length > 0 && (
+          <p className="text-[12.5px] text-ink-600 leading-relaxed">
+            <span className="font-medium text-amber-800">
+              {pendingApproval.map((s) => s.label).join(", ")}
+            </span>{" "}
+            {pendingApproval.length === 1 ? "has" : "have"} unapproved entries —
+            approve them to confirm these figures.
+          </p>
+        )}
+        {notEntered.length > 0 && (
+          <p className="text-[12.5px] text-ink-600 leading-relaxed">
+            <span className="font-medium text-amber-800">
+              {notEntered.map((s) => s.label).join(", ")}
+            </span>{" "}
+            {notEntered.length === 1 ? "hasn't" : "haven't"} been entered yet —
+            the estimate uses $0 for{" "}
+            {notEntered.length === 1 ? "this category" : "these categories"}.
+            Enter them to move confidence to High.
+          </p>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -225,9 +262,7 @@ function BonusProgressRow({ bonus: b }: { bonus: BonusProgress }) {
             {formatMoney(b.away)}
           </span>{" "}
           away from{" "}
-          <span className="text-brand-700 font-medium">
-            +{formatMoney(b.amount)}
-          </span>
+          <span className="text-brand-700 font-medium">+{formatMoney(b.amount)}</span>
         </div>
         <div className="text-[11px] text-ink-400 font-mono tabular shrink-0">
           {formatMoney(b.currentGross)} / {formatMoney(b.threshold)}
