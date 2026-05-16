@@ -1,34 +1,24 @@
 /**
  * Deal calculation logic for the in-app settlement tool.
  *
- * IMPORTANT — DELIBERATELY INCOMPLETE.
+ * Supported deal types:
  *
- * This is the existing Greenroom settlement engine. It was built early in
- * the company's life, when most deals were flat guarantees. It currently
- * handles two deal types end-to-end:
+ *   1. flat                 — $X guaranteed, optional bonuses
+ *   2. percentage_of_gross  — X% of gross, no expense deductions, optional bonuses
+ *   3. vs                   — MAX(guarantee, % of net after capped expenses) + bonuses
+ *                             This is the most common deal type at The Crescent (~70%).
+ *                             Walkout pots, tier ratchets, and vs-gross variants are
+ *                             out of scope for V1 — the data model is architected to
+ *                             support them in V2 without rearchitecting.
  *
- *   1. flat                 — $X guaranteed, optional sellout bonus
- *   2. percentage_of_gross  — X% of gross, no expense deductions, optional sellout bonus
- *
- * For both, it reads `bonusesJson` and applies bonuses where it can — but
- * only the structured ones. Bonuses that exist only in `dealNotesFreetext`
- * are invisible to this engine.
- *
- * It does NOT handle:
- *
- *   - vs deals (guarantee vs % of net, whichever greater)
- *   - percentage_of_net deals (with expense deductions)
+ * Not yet supported (V2):
+ *   - percentage_of_net (without a guarantee floor)
  *   - door deals
- *   - recoups (those flow separately through the settlement record)
- *   - tier ratchets (would need vs-deal support first)
+ *   - tier ratchets
  *   - comps that count toward gross
- *
- * For unsupported deals, the tool returns { supported: false } and the UI
- * shows the "this deal type isn't yet supported" empty state. About 82% of
- * Greenroom's customers default to spreadsheets because of this.
  */
 
-import type { Deal, Expense, TicketSale, Bonus } from "@/db/schema";
+import type { Deal, Expense, TicketSale, Bonus, Recoup } from "@/db/schema";
 
 export type SettlementCalculation =
   | {
@@ -37,13 +27,26 @@ export type SettlementCalculation =
       netBoxOffice: number;
       totalExpenses: number;
       totalToArtist: number;
-      steps: { label: string; value: number; note?: string }[];
+      steps: { label: string; value: number; note?: string; isDeduction?: boolean }[];
       finalFormula: string;
-      // Bonuses that were applied. Empty array if no bonuses on the deal,
-      // or if no bonuses triggered.
       bonusesApplied: { label: string; amount: number; reason: string }[];
-      // Bonuses that exist on the deal but didn't trigger (helpful context).
       bonusesNotTriggered: { label: string; amount: number; reason: string }[];
+      // Present only for vs deals. Drives the guarantee-vs-percentage comparison UI.
+      vsDetails?: {
+        guarantee: number;
+        percentagePayout: number;
+        netAfterDeductions: number;
+        winner: "guarantee" | "percentage";
+      };
+      // Gross-threshold bonus progress bars — useful even when not triggered.
+      bonusThresholdProgress?: Array<{
+        label: string;
+        amount: number;
+        threshold: number;
+        currentGross: number;
+        away: number;
+        triggered: boolean;
+      }>;
     }
   | {
       supported: false;
@@ -59,6 +62,10 @@ interface CalcInput {
   // sellout bonuses are reported as "can't determine".
   venueCapacity?: number;
   ticketsSold?: number;
+  // Required for vs deals to place recoups correctly in the calculation.
+  // Recoup placement is governed by the `application` field (Feature 1.2).
+  // Recoups without an application field default to 'pre_net' for V1.
+  recoups?: Recoup[];
 }
 
 export function parseBonuses(deal: Deal): Bonus[] {
@@ -72,7 +79,7 @@ export function parseBonuses(deal: Deal): Bonus[] {
 }
 
 export function calculateSettlement(input: CalcInput): SettlementCalculation {
-  const { deal, ticketSales, expenses, venueCapacity, ticketsSold } = input;
+  const { deal, ticketSales, expenses, venueCapacity, ticketsSold, recoups } = input;
 
   const grossBoxOffice = ticketSales.reduce((sum, t) => sum + t.gross, 0);
   const totalFees = ticketSales.reduce((sum, t) => sum + t.fees, 0);
@@ -168,6 +175,196 @@ export function calculateSettlement(input: CalcInput): SettlementCalculation {
     };
   }
 
+  // ---------- vs deal: MAX(guarantee, % of net after capped expenses) ----------
+  if (deal.dealType === "vs") {
+    if (deal.guaranteeAmount == null) {
+      return {
+        supported: false,
+        reason:
+          "Vs deal is missing a guarantee amount — can't find the floor without it.",
+        dealType: deal.dealType,
+      };
+    }
+    if (deal.percentage == null) {
+      return {
+        supported: false,
+        reason:
+          "Vs deal is missing a percentage — can't calculate the percentage track without it.",
+        dealType: deal.dealType,
+      };
+    }
+
+    // --- Recoup placement (Feature 1.2) ---
+    // application field governs where the recoup sits in the calculation.
+    // V1 default when application is absent: treat as 'pre_net'.
+    const agreedRecoups = (recoups ?? []).filter((r) => r.status === "agreed");
+
+    // Recoups that count toward the expense cap ceiling (reduce how much of
+    // the cap is available for regular expenses).
+    const insideCapTotal = agreedRecoups
+      .filter((r) => r.application === "inside_cap")
+      .reduce((s, r) => s + r.amount, 0);
+
+    // Recoups deducted from gross before net is calculated (outside the cap).
+    // Default for V1 when no application field is set.
+    const preNetTotal = agreedRecoups
+      .filter(
+        (r) =>
+          !r.application ||
+          r.application === "pre_net" ||
+          r.application === "additional_to_cap",
+      )
+      .reduce((s, r) => s + r.amount, 0);
+
+    // Recoups deducted after the cap calculation (reduces the net basis
+    // for the percentage calculation).
+    const postNetTotal = agreedRecoups
+      .filter((r) => r.application === "post_net")
+      .reduce((s, r) => s + r.amount, 0);
+
+    // --- Capped expenses ---
+    const rawExpenses = expenses
+      .filter((e) => !e.absorbedByVenue)
+      .reduce((s, e) => s + e.amount, 0);
+
+    let cappedExpenses: number;
+    if (deal.expenseCap != null) {
+      // inside_cap recoups eat into the cap; remaining cap covers regular expenses.
+      const capRemaining = Math.max(0, deal.expenseCap - insideCapTotal);
+      cappedExpenses = Math.min(rawExpenses, capRemaining);
+    } else {
+      cappedExpenses = rawExpenses;
+    }
+
+    // --- Net calculation ---
+    // Net = gross − fees − pre-net recoups − inside-cap recoups − capped expenses − post-net recoups
+    const netAfterDeductions =
+      grossBoxOffice -
+      totalFees -
+      preNetTotal -
+      insideCapTotal -
+      cappedExpenses -
+      postNetTotal;
+
+    const percentagePayout = Math.max(0, netAfterDeductions) * deal.percentage;
+    const winner: "guarantee" | "percentage" =
+      percentagePayout >= deal.guaranteeAmount ? "percentage" : "guarantee";
+    const basePayout = Math.max(deal.guaranteeAmount, percentagePayout);
+
+    const bonuses = parseBonuses(deal);
+    const bonusResult = applyBonuses(bonuses, {
+      gross: grossBoxOffice,
+      tickets,
+      capacity: venueCapacity,
+    });
+
+    const totalToArtist = basePayout + bonusResult.totalApplied;
+    const totalRecoupDeducted = preNetTotal + insideCapTotal + postNetTotal;
+
+    // --- Build step-by-step worksheet ---
+    const steps: {
+      label: string;
+      value: number;
+      note?: string;
+      isDeduction?: boolean;
+    }[] = [
+      {
+        label: "Gross box office",
+        value: grossBoxOffice,
+        note: "Total ticket revenue from POS",
+      },
+      {
+        label: "Less platform & CC fees",
+        value: -totalFees,
+        isDeduction: true,
+      },
+    ];
+
+    if (totalRecoupDeducted > 0) {
+      const recoupCount = agreedRecoups.filter(
+        (r) =>
+          !r.application ||
+          r.application === "pre_net" ||
+          r.application === "additional_to_cap" ||
+          r.application === "inside_cap" ||
+          r.application === "post_net",
+      ).length;
+      steps.push({
+        label: `Less recoups (${recoupCount} agreed)`,
+        value: -totalRecoupDeducted,
+        isDeduction: true,
+        note: "Agreed recoups deducted before net is calculated",
+      });
+    }
+
+    const expenseNote =
+      deal.expenseCap != null
+        ? rawExpenses > deal.expenseCap
+          ? `Capped at deal limit — actual $${Math.round(rawExpenses).toLocaleString("en-US")}, saving $${Math.round(rawExpenses - cappedExpenses).toLocaleString("en-US")}`
+          : `Within cap of $${Math.round(deal.expenseCap).toLocaleString("en-US")}`
+        : undefined;
+
+    steps.push({
+      label:
+        deal.expenseCap != null
+          ? `Less expenses (capped at $${Math.round(deal.expenseCap).toLocaleString("en-US")})`
+          : "Less expenses",
+      value: -cappedExpenses,
+      isDeduction: true,
+      note: expenseNote,
+    });
+
+    steps.push({
+      label: "Net",
+      value: netAfterDeductions,
+      note: "Basis for percentage calculation",
+    });
+
+    steps.push({
+      label: `× ${(deal.percentage * 100).toFixed(0)}% (percentage track)`,
+      value: percentagePayout,
+    });
+
+    for (const b of bonusResult.applied) {
+      steps.push({ label: b.label, value: b.amount, note: b.reason });
+    }
+
+    // --- Bonus threshold progress ---
+    const bonusThresholdProgress = bonuses
+      .filter(
+        (b): b is Extract<Bonus, { type: "gross_threshold" }> =>
+          b.type === "gross_threshold",
+      )
+      .map((b) => ({
+        label: b.label,
+        amount: b.amount,
+        threshold: b.threshold,
+        currentGross: grossBoxOffice,
+        away: Math.max(0, b.threshold - grossBoxOffice),
+        triggered: grossBoxOffice >= b.threshold,
+      }));
+
+    return {
+      supported: true,
+      grossBoxOffice,
+      netBoxOffice,
+      totalExpenses: cappedExpenses,
+      totalToArtist,
+      steps,
+      finalFormula: `MAX($${Math.round(deal.guaranteeAmount).toLocaleString("en-US")} guarantee, ${(deal.percentage * 100).toFixed(0)}% × $${Math.round(netAfterDeductions).toLocaleString("en-US")} net) → ${winner} wins`,
+      bonusesApplied: bonusResult.applied,
+      bonusesNotTriggered: bonusResult.notTriggered,
+      vsDetails: {
+        guarantee: deal.guaranteeAmount,
+        percentagePayout,
+        netAfterDeductions,
+        winner,
+      },
+      bonusThresholdProgress:
+        bonusThresholdProgress.length > 0 ? bonusThresholdProgress : undefined,
+    };
+  }
+
   // ---------- everything else: not supported ----------
   const friendlyName: Record<Deal["dealType"], string> = {
     flat: "Flat guarantee",
@@ -241,14 +438,12 @@ function applyBonuses(
         });
       }
     } else if (b.type === "tier_ratchet") {
-      // Tier ratchets fundamentally change the percentage structure. The
-      // current engine only supports flat % of gross — we can't apply a
-      // ratcheting structure on top of it without knowing which deal type
-      // it's modifying. Report as not-applicable.
+      // Tier ratchets are out of scope for V1 — they need a separate escalating
+      // percentage structure. Named in the backlog; V2 can extend without rearchitecting.
       notTriggered.push({
         label: b.label,
         amount: 0,
-        reason: "Tier ratchets need vs-deal or % of net support — not yet handled",
+        reason: "Tier ratchets are a V2 feature — not yet handled",
       });
     }
   }
