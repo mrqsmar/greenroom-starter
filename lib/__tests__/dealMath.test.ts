@@ -652,15 +652,157 @@ describe("Feature 1.1 — Vs Deal Calculator", () => {
       if (!result.supported) throw new Error("Expected supported");
       expect(result.totalToArtist).toBe(10000 * 0.85);
     });
+  });
 
-    it("door deal still returns supported: false (out of V1 scope)", () => {
+  describe("Tier ratchet bonuses in vs deals", () => {
+    it("single-tier ratchet: replaces flat percentage with tiered calculation", () => {
+      // net = 20000 - 2000 - 1000 = 17000
+      // tiers: 85% on first $10k, 90% on remainder
+      // tiered = (10000 × 0.85) + (7000 × 0.90) = 8500 + 6300 = 14800
+      // guarantee: $5000 → percentage wins
+      const deal = makeDeal({
+        expenseCap: null,
+        bonusesJson: JSON.stringify([{
+          type: "tier_ratchet",
+          label: "Escalating split",
+          tiers: [
+            { from: 0, to: 10000, percentage: 0.85 },
+            { from: 10000, to: null, percentage: 0.90 },
+          ],
+        }]),
+      });
       const result = calculateSettlement({
-        deal: makeDeal({ dealType: "door" }),
-        ticketSales: [makeSale(10000, 1000)],
-        expenses: [],
+        deal,
+        ticketSales: [makeSale(20000, 2000)],
+        expenses: [makeExpense(1000)],
         recoups: [],
       });
-      expect(result.supported).toBe(false);
+      expect(result.supported).toBe(true);
+      if (!result.supported) throw new Error("Expected supported");
+      expect(result.totalToArtist).toBeCloseTo(14800, 1);
+    });
+
+    it("tier ratchet: guarantee still wins when it exceeds tiered payout", () => {
+      // net = 5000 - 500 - 2000 = 2500
+      // tiers: 85% on all net → 2125
+      // guarantee: $5000 wins
+      const deal = makeDeal({
+        guaranteeAmount: 5000,
+        expenseCap: null,
+        bonusesJson: JSON.stringify([{
+          type: "tier_ratchet",
+          label: "Ratchet",
+          tiers: [{ from: 0, to: null, percentage: 0.85 }],
+        }]),
+      });
+      const result = calculateSettlement({
+        deal,
+        ticketSales: [makeSale(5000, 500)],
+        expenses: [makeExpense(2000)],
+        recoups: [],
+      });
+      expect(result.supported).toBe(true);
+      if (!result.supported) throw new Error("Expected supported");
+      expect(result.vsDetails!.winner).toBe("guarantee");
+      expect(result.totalToArtist).toBe(5000);
+    });
+
+    it("tier ratchet: exposes percentagePayout as the tiered sum in vsDetails", () => {
+      // net = 20000 - 2000 - 1000 = 17000
+      // tiers: 85% on 0–10k, 90% on 10k+
+      // tiered = 8500 + 6300 = 14800
+      const deal = makeDeal({
+        expenseCap: null,
+        bonusesJson: JSON.stringify([{
+          type: "tier_ratchet",
+          label: "Ratchet",
+          tiers: [
+            { from: 0, to: 10000, percentage: 0.85 },
+            { from: 10000, to: null, percentage: 0.90 },
+          ],
+        }]),
+      });
+      const result = calculateSettlement({
+        deal,
+        ticketSales: [makeSale(20000, 2000)],
+        expenses: [makeExpense(1000)],
+        recoups: [],
+      });
+      if (!result.supported) throw new Error("Expected supported");
+      expect(result.vsDetails!.percentagePayout).toBeCloseTo(14800, 1);
+    });
+
+    it("tier ratchet: shows tier breakdown steps", () => {
+      const deal = makeDeal({
+        expenseCap: null,
+        bonusesJson: JSON.stringify([{
+          type: "tier_ratchet",
+          label: "Escalating split",
+          tiers: [
+            { from: 0, to: 10000, percentage: 0.85 },
+            { from: 10000, to: null, percentage: 0.90 },
+          ],
+        }]),
+      });
+      const result = calculateSettlement({
+        deal,
+        ticketSales: [makeSale(20000, 2000)],
+        expenses: [makeExpense(1000)],
+        recoups: [],
+      });
+      if (!result.supported) throw new Error("Expected supported");
+      const tierStep = result.steps.find(s => s.label.includes("tier ratchet"));
+      expect(tierStep).toBeDefined();
+      const subtierSteps = result.steps.filter(s => s.label.startsWith("  "));
+      expect(subtierSteps.length).toBe(2); // two tiers active
+    });
+
+    it("tier ratchet with net = 0: goes to notTriggered", () => {
+      const deal = makeDeal({
+        guaranteeAmount: 5000,
+        expenseCap: null,
+        bonusesJson: JSON.stringify([{
+          type: "tier_ratchet",
+          label: "Ratchet",
+          tiers: [{ from: 0, to: null, percentage: 0.85 }],
+        }]),
+      });
+      const result = calculateSettlement({
+        deal,
+        ticketSales: [makeSale(1000, 800)],
+        expenses: [makeExpense(5000)],
+        recoups: [],
+      });
+      if (!result.supported) throw new Error("Expected supported");
+      // guarantee still applies; tier ratchet reported as not triggered
+      expect(result.totalToArtist).toBe(5000);
+      expect(result.bonusesNotTriggered.some(b => b.label === "Ratchet")).toBe(true);
+    });
+
+    it("tier ratchet doesn't affect gross_threshold bonus: both computed independently", () => {
+      const deal = makeDeal({
+        expenseCap: null,
+        bonusesJson: JSON.stringify([
+          {
+            type: "tier_ratchet",
+            label: "Ratchet",
+            tiers: [{ from: 0, to: null, percentage: 0.85 }],
+          },
+          { type: "gross_threshold", label: "Gross bonus", threshold: 15000, amount: 500 },
+        ]),
+      });
+      const result = calculateSettlement({
+        deal,
+        ticketSales: [makeSale(20000, 2000)],
+        expenses: [makeExpense(1000)],
+        recoups: [],
+      });
+      if (!result.supported) throw new Error("Expected supported");
+      // gross bonus triggered (20000 > 15000)
+      expect(result.bonusesApplied.some(b => b.label === "Gross bonus")).toBe(true);
+      // tiered payout = 85% × 17000 = 14450
+      expect(result.vsDetails!.percentagePayout).toBeCloseTo(14450, 1);
+      expect(result.totalToArtist).toBeCloseTo(14450 + 500, 1);
     });
   });
 
@@ -679,5 +821,268 @@ describe("Feature 1.1 — Vs Deal Calculator", () => {
       const bonuses = [{ type: "gross_threshold", label: "Test", threshold: 10000, amount: 500 }];
       expect(parseBonuses(makeDeal({ bonusesJson: JSON.stringify(bonuses) }))).toEqual(bonuses);
     });
+  });
+});
+
+// ─── percentage_of_net ────────────────────────────────────────────────────────
+
+describe("percentage_of_net deal", () => {
+  it("basic: artist gets percentage × net after fees and expenses", () => {
+    // gross: $20,000 | fees: $2,000 | expenses: $1,000 | net: $17,000 | 85% = $14,450
+    const result = calculateSettlement({
+      deal: makeDeal({ dealType: "percentage_of_net", guaranteeAmount: null, percentage: 0.85, expenseCap: null }),
+      ticketSales: [makeSale(20000, 2000)],
+      expenses: [makeExpense(1000)],
+      recoups: [],
+    });
+    expect(result.supported).toBe(true);
+    if (!result.supported) throw new Error("Expected supported");
+    expect(result.totalToArtist).toBeCloseTo(14450, 1);
+  });
+
+  it("with recoups: deducted from net before percentage applies", () => {
+    // net = 20000 - 2000 - 800 - 1000 = 16200 | 85% = 13770
+    const result = calculateSettlement({
+      deal: makeDeal({ dealType: "percentage_of_net", guaranteeAmount: null, percentage: 0.85, expenseCap: null }),
+      ticketSales: [makeSale(20000, 2000)],
+      expenses: [makeExpense(1000)],
+      recoups: [makeRecoup(800)],
+    });
+    if (!result.supported) throw new Error("Expected supported");
+    expect(result.totalToArtist).toBeCloseTo(13770, 1);
+  });
+
+  it("with expense cap: capped expenses reduce net", () => {
+    // gross: $20,000 | fees: $2,000 | expenses actual $3,500, capped at $2,000
+    // net = 20000 - 2000 - 2000 = 16000 | 85% = 13600
+    const result = calculateSettlement({
+      deal: makeDeal({ dealType: "percentage_of_net", guaranteeAmount: null, percentage: 0.85, expenseCap: 2000 }),
+      ticketSales: [makeSale(20000, 2000)],
+      expenses: [makeExpense(3500)],
+      recoups: [],
+    });
+    if (!result.supported) throw new Error("Expected supported");
+    expect(result.totalToArtist).toBeCloseTo(13600, 1);
+  });
+
+  it("returns supported: false when percentage is missing", () => {
+    const result = calculateSettlement({
+      deal: makeDeal({ dealType: "percentage_of_net", percentage: null }),
+      ticketSales: [makeSale(10000, 1000)],
+      expenses: [],
+      recoups: [],
+    });
+    expect(result.supported).toBe(false);
+    if (result.supported) throw new Error("Expected unsupported");
+    expect(result.reason).toMatch(/percentage/i);
+  });
+
+  it("no vsDetails — no guarantee floor comparison", () => {
+    const result = calculateSettlement({
+      deal: makeDeal({ dealType: "percentage_of_net", guaranteeAmount: null, percentage: 0.85, expenseCap: null }),
+      ticketSales: [makeSale(20000, 2000)],
+      expenses: [],
+      recoups: [],
+    });
+    if (!result.supported) throw new Error("Expected supported");
+    expect(result.vsDetails).toBeUndefined();
+  });
+
+  it("stepsAreComplete is true — worksheet starts from gross", () => {
+    const result = calculateSettlement({
+      deal: makeDeal({ dealType: "percentage_of_net", guaranteeAmount: null, percentage: 0.85, expenseCap: null }),
+      ticketSales: [makeSale(20000, 2000)],
+      expenses: [],
+      recoups: [],
+    });
+    if (!result.supported) throw new Error("Expected supported");
+    expect(result.stepsAreComplete).toBe(true);
+    expect(result.steps[0].label).toMatch(/gross box office/i);
+  });
+
+  it("negative net floors payout at 0", () => {
+    const result = calculateSettlement({
+      deal: makeDeal({ dealType: "percentage_of_net", guaranteeAmount: null, percentage: 0.85, expenseCap: null }),
+      ticketSales: [makeSale(1000, 800)],
+      expenses: [makeExpense(5000)],
+      recoups: [],
+    });
+    if (!result.supported) throw new Error("Expected supported");
+    expect(result.totalToArtist).toBe(0);
+  });
+});
+
+// ─── door deal ────────────────────────────────────────────────────────────────
+
+describe("door deal", () => {
+  it("basic: artist takes net door (gross − fees − expenses)", () => {
+    // gross: $10,000 | fees: $1,000 | expenses: $500 | door: $8,500
+    const result = calculateSettlement({
+      deal: makeDeal({ dealType: "door", guaranteeAmount: null, percentage: null, expenseCap: null }),
+      ticketSales: [makeSale(10000, 1000)],
+      expenses: [makeExpense(500)],
+      recoups: [],
+    });
+    expect(result.supported).toBe(true);
+    if (!result.supported) throw new Error("Expected supported");
+    expect(result.totalToArtist).toBe(8500);
+  });
+
+  it("with percentage split: artist gets X% of net door", () => {
+    // net door = 10000 - 1000 - 500 = 8500 | 80% = 6800
+    const result = calculateSettlement({
+      deal: makeDeal({ dealType: "door", guaranteeAmount: null, percentage: 0.80, expenseCap: null }),
+      ticketSales: [makeSale(10000, 1000)],
+      expenses: [makeExpense(500)],
+      recoups: [],
+    });
+    if (!result.supported) throw new Error("Expected supported");
+    expect(result.totalToArtist).toBe(6800);
+  });
+
+  it("with guarantee floor: takes MAX(guarantee, net door)", () => {
+    // net door = 10000 - 1000 - 500 = 8500 < guarantee $10,000 → guarantee wins
+    const result = calculateSettlement({
+      deal: makeDeal({ dealType: "door", guaranteeAmount: 10000, percentage: null, expenseCap: null }),
+      ticketSales: [makeSale(10000, 1000)],
+      expenses: [makeExpense(500)],
+      recoups: [],
+    });
+    if (!result.supported) throw new Error("Expected supported");
+    expect(result.totalToArtist).toBe(10000);
+  });
+
+  it("door exceeds guarantee: door wins", () => {
+    // net door = 30000 - 3000 - 500 = 26500 > guarantee $5000
+    const result = calculateSettlement({
+      deal: makeDeal({ dealType: "door", guaranteeAmount: 5000, percentage: null, expenseCap: null }),
+      ticketSales: [makeSale(30000, 3000)],
+      expenses: [makeExpense(500)],
+      recoups: [],
+    });
+    if (!result.supported) throw new Error("Expected supported");
+    expect(result.totalToArtist).toBe(26500);
+  });
+
+  it("absorbed expenses don't reduce the door payout", () => {
+    // Only non-absorbed expenses count
+    const result = calculateSettlement({
+      deal: makeDeal({ dealType: "door", guaranteeAmount: null, percentage: null, expenseCap: null }),
+      ticketSales: [makeSale(10000, 1000)],
+      expenses: [makeExpense(500), makeExpense(2000, "production", true)], // 2000 absorbed
+      recoups: [],
+    });
+    if (!result.supported) throw new Error("Expected supported");
+    expect(result.totalToArtist).toBe(8500); // 10000 - 1000 - 500 (absorbed 2000 ignored)
+  });
+
+  it("stepsAreComplete is true", () => {
+    const result = calculateSettlement({
+      deal: makeDeal({ dealType: "door", guaranteeAmount: null, percentage: null, expenseCap: null }),
+      ticketSales: [makeSale(10000, 1000)],
+      expenses: [],
+      recoups: [],
+    });
+    if (!result.supported) throw new Error("Expected supported");
+    expect(result.stepsAreComplete).toBe(true);
+  });
+
+  it("negative door (bad show) floors at 0 before applying percentage", () => {
+    const result = calculateSettlement({
+      deal: makeDeal({ dealType: "door", guaranteeAmount: null, percentage: 0.85, expenseCap: null }),
+      ticketSales: [makeSale(500, 400)],
+      expenses: [makeExpense(5000)],
+      recoups: [],
+    });
+    if (!result.supported) throw new Error("Expected supported");
+    expect(result.totalToArtist).toBe(0);
+  });
+});
+
+// ─── walkout pot ──────────────────────────────────────────────────────────────
+
+describe("walkout_pot deal", () => {
+  it("basic: artist takes everything left after fees and expenses", () => {
+    // pot = 20000 - 2000 - 3000 = 15000 | 100% = 15000
+    const result = calculateSettlement({
+      deal: makeDeal({ dealType: "walkout_pot", guaranteeAmount: null, percentage: null, expenseCap: null }),
+      ticketSales: [makeSale(20000, 2000)],
+      expenses: [makeExpense(3000)],
+      recoups: [],
+    });
+    expect(result.supported).toBe(true);
+    if (!result.supported) throw new Error("Expected supported");
+    expect(result.totalToArtist).toBe(15000);
+  });
+
+  it("with agreed recoups: deducted from pot", () => {
+    // pot = 20000 - 2000 - 3000 - 1000 = 14000
+    const result = calculateSettlement({
+      deal: makeDeal({ dealType: "walkout_pot", guaranteeAmount: null, percentage: null, expenseCap: null }),
+      ticketSales: [makeSale(20000, 2000)],
+      expenses: [makeExpense(3000)],
+      recoups: [makeRecoup(1000)],
+    });
+    if (!result.supported) throw new Error("Expected supported");
+    expect(result.totalToArtist).toBe(14000);
+  });
+
+  it("with percentage split: artist gets X% of pot", () => {
+    // pot = 20000 - 2000 - 3000 = 15000 | 70% = 10500
+    const result = calculateSettlement({
+      deal: makeDeal({ dealType: "walkout_pot", guaranteeAmount: null, percentage: 0.70, expenseCap: null }),
+      ticketSales: [makeSale(20000, 2000)],
+      expenses: [makeExpense(3000)],
+      recoups: [],
+    });
+    if (!result.supported) throw new Error("Expected supported");
+    expect(result.totalToArtist).toBe(10500);
+  });
+
+  it("disputed recoups don't reduce the pot", () => {
+    const result = calculateSettlement({
+      deal: makeDeal({ dealType: "walkout_pot", guaranteeAmount: null, percentage: null, expenseCap: null }),
+      ticketSales: [makeSale(20000, 2000)],
+      expenses: [makeExpense(3000)],
+      recoups: [makeRecoup(1000, undefined, "disputed")],
+    });
+    if (!result.supported) throw new Error("Expected supported");
+    expect(result.totalToArtist).toBe(15000); // disputed recoup not in pot
+  });
+
+  it("negative pot floors at 0", () => {
+    const result = calculateSettlement({
+      deal: makeDeal({ dealType: "walkout_pot", guaranteeAmount: null, percentage: null, expenseCap: null }),
+      ticketSales: [makeSale(1000, 800)],
+      expenses: [makeExpense(10000)],
+      recoups: [],
+    });
+    if (!result.supported) throw new Error("Expected supported");
+    expect(result.totalToArtist).toBe(0);
+  });
+
+  it("stepsAreComplete is true — worksheet starts from gross", () => {
+    const result = calculateSettlement({
+      deal: makeDeal({ dealType: "walkout_pot", guaranteeAmount: null, percentage: null, expenseCap: null }),
+      ticketSales: [makeSale(20000, 2000)],
+      expenses: [makeExpense(3000)],
+      recoups: [],
+    });
+    if (!result.supported) throw new Error("Expected supported");
+    expect(result.stepsAreComplete).toBe(true);
+    expect(result.steps[0].label).toMatch(/gross box office/i);
+  });
+
+  it("shows walkout pot step in the worksheet", () => {
+    const result = calculateSettlement({
+      deal: makeDeal({ dealType: "walkout_pot", guaranteeAmount: null, percentage: null, expenseCap: null }),
+      ticketSales: [makeSale(20000, 2000)],
+      expenses: [makeExpense(3000)],
+      recoups: [],
+    });
+    if (!result.supported) throw new Error("Expected supported");
+    const potStep = result.steps.find(s => s.label === "Walkout pot");
+    expect(potStep).toBeDefined();
+    expect(potStep!.value).toBe(15000);
   });
 });

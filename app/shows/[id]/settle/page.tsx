@@ -401,6 +401,7 @@ function UnsupportedDeal({
     percentage_of_net: "percentage of net",
     vs: "vs deal",
     door: "door deal",
+    walkout_pot: "walkout pot",
   };
 
   return (
@@ -516,7 +517,9 @@ function SupportedSettlement({
     Awaited<ReturnType<typeof getShowById>>
   >["settlement"];
 }) {
-  const isVs = !!calc.vsDetails;
+  // stepsAreComplete: handler provides the full worksheet top-to-bottom (vs, % of net, door, walkout_pot).
+  // Otherwise (flat, % of gross): show summary header rows first, then the handler's steps.
+  const useDetailedSteps = !!calc.vsDetails || !!calc.stepsAreComplete;
 
   return (
     <>
@@ -563,8 +566,8 @@ function SupportedSettlement({
           </div>
         </CardHeader>
         <CardContent className="divide-y divide-ink-100/80">
-          {isVs ? (
-            // Vs deals: steps ARE the full calculation — gross through net through %
+          {useDetailedSteps ? (
+            // Full step-by-step worksheet (vs, % of net, door, walkout pot)
             <>
               {calc.steps.map((step, i) => (
                 <Row
@@ -577,7 +580,7 @@ function SupportedSettlement({
               ))}
             </>
           ) : (
-            // Flat / % of gross: header rows + steps
+            // Flat / % of gross: summary header rows + deal-specific steps
             <>
               <Row
                 label="Gross box office"

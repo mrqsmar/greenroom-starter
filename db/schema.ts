@@ -114,7 +114,7 @@ export const deals = sqliteTable("deals", {
     .references(() => shows.id),
 
   dealType: text("deal_type", {
-    enum: ["flat", "percentage_of_gross", "percentage_of_net", "vs", "door"],
+    enum: ["flat", "percentage_of_gross", "percentage_of_net", "vs", "door", "walkout_pot"],
   }).notNull(),
   guaranteeAmount: real("guarantee_amount"),
   percentage: real("percentage"),

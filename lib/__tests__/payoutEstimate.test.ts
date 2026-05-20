@@ -130,14 +130,18 @@ describe("computePayoutEstimate", () => {
       }
     });
 
-    it("returns estimable: false for an unsupported deal type (door)", () => {
+    it("returns estimable: false when a vs deal is missing its guarantee", () => {
+      // calculateSettlement returns supported: false → estimate should be blocked
       const result = computePayoutEstimate({
-        deal: makeDeal({ dealType: "door" }),
+        deal: makeDeal({ dealType: "vs", guaranteeAmount: null }),
         ticketSales: [makeSale(10000, 800, 200)],
         expenses: [],
         recoups: [],
       });
       expect(result.estimable).toBe(false);
+      if (!result.estimable) {
+        expect(result.reason).toMatch(/guarantee/i);
+      }
     });
   });
 

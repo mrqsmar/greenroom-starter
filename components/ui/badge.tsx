@@ -99,6 +99,11 @@ const dealStyles: Record<string, { bg: string; fg: string; ring: string }> = {
     fg: "text-rose-800",
     ring: "ring-rose-200/80",
   },
+  walkout_pot: {
+    bg: "bg-purple-50",
+    fg: "text-purple-800",
+    ring: "ring-purple-200/80",
+  },
 };
 
 const dealLabels: Record<string, string> = {
@@ -107,6 +112,7 @@ const dealLabels: Record<string, string> = {
   percentage_of_net: "% of net",
   vs: "Vs deal",
   door: "Door deal",
+  walkout_pot: "Walkout pot",
 };
 
 export function DealTypeBadge({
